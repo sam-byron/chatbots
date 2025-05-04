@@ -3,7 +3,7 @@ import math
 import torch
 import json
 from torch.utils.data import DataLoader, IterableDataset, get_worker_info
-from transformers import GPT2LMHeadModel, GPT2Tokenizer, GPT2Config, get_scheduler
+from transformers import GPT2LMHeadModel, GPT2Tokenizer, GPT2Config, get_scheduler, AutoTokenizer
 from torch.optim import AdamW
 from datasets import load_dataset
 from tqdm import tqdm
@@ -28,7 +28,8 @@ grad_accum = config["grad_accum"]
 num_epochs = config["num_epochs"]
 
 # 2) Tokenizer & Model setup
-tokenizer = GPT2Tokenizer.from_pretrained(config["model_name"])
+tokenizer = AutoTokenizer.from_pretrained("gpt2")
+# tokenizer = GPT2Tokenizer.from_pretrained(config["model_name"])
 tokenizer.pad_token = tokenizer.eos_token
 
 model_config = GPT2Config(
