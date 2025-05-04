@@ -7,6 +7,7 @@ from torch.optim import AdamW
 from datasets import load_dataset
 from tqdm import tqdm
 from multiprocessing import Pool
+import argparse
 
 # 1) Hyperparameters & device
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -14,18 +15,27 @@ num_cpu = os.cpu_count()
 block_size = 256
 batch_size = 32
 grad_accum = 2
-num_epochs = 20
+num_epochs = 25
 
 # 2) Tokenizer & Model setup
 tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
 tokenizer.pad_token = tokenizer.eos_token
 
+parser = argparse.ArgumentParser(description="Chatbot Training Script")
+parser.add_argument("--vocab_size", type=int, default=tokenizer.vocab_size, help="Vocabulary size")
+parser.add_argument("--n_positions", type=int, default=1024, help="Number of positions")
+parser.add_argument("--n_embed", type=int, default=1120, help="Embedding size")
+parser.add_argument("--n_layer", type=int, default=16, help="Number of layers")
+parser.add_argument("--n_head", type=int, default=16, help="Number of attention heads")
+parser.add_argument("--checkpoint_path", type=str, default="checkpoint.pt", help="Path to the checkpoint file")
+args = parser.parse_args()
+
 model_config = GPT2Config(
-    vocab_size=tokenizer.vocab_size,
-    n_positions=1024,
-    n_embd=1120,
-    n_layer=16,
-    n_head=16,
+    vocab_size=args.vocab_size,
+    n_positions=args.n_positions,
+    n_embd=args.n_embed,
+    n_layer=args.n_layer,
+    n_head=args.n_head,
 )
 
 # tell the tokenizer what its max context really is
@@ -162,7 +172,10 @@ def load_checkpoint(checkpoint_path="checkpoint.pt"):
         return None
 
 # --- Load Checkpoint if Available ---
-checkpoint_path = "checkpoint.pt"
+# parser.add_argument("--checkpoint_path", type=str, default="checkpoint.pt", help="Path to the checkpoint file")
+# args = parser.parse_args()
+
+checkpoint_path = args.checkpoint_path
 checkpoint = load_checkpoint(checkpoint_path)
 
 start_epoch = 0
