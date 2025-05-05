@@ -28,8 +28,8 @@ grad_accum = config["grad_accum"]
 num_epochs = config["num_epochs"]
 
 # 2) Tokenizer & Model setup
-tokenizer = AutoTokenizer.from_pretrained("gpt2")
-# tokenizer = GPT2Tokenizer.from_pretrained(config["model_name"])
+# tokenizer = AutoTokenizer.from_pretrained("gpt2")
+tokenizer = GPT2Tokenizer.from_pretrained(config["model_name"])
 tokenizer.pad_token = tokenizer.eos_token
 
 model_config = GPT2Config(
@@ -185,38 +185,42 @@ if checkpoint:
     scaler.load_state_dict(checkpoint["scaler_state_dict"])
     start_epoch = checkpoint["epoch"] + 1
 
-# --- Training Loop with Resumption ---
-gradient_accumulation_steps = grad_accum
-model.train()
+if start_epoch >= num_epochs:
+    print("Training already completed. Exiting.")
+else:
+    print(f"Resuming training from epoch {start_epoch + 1} of {num_epochs}")
+    # --- Training Loop with Resumption ---
+    gradient_accumulation_steps = grad_accum
+    model.train()
 
-for epoch in range(start_epoch, num_epochs):
-    total_loss = 0
-    for step, batch in enumerate(tqdm(train_loader, desc=f"Epoch {epoch + 1}")):
-        input_ids = batch["input_ids"].to(device)
-        attention_mask = batch["attention_mask"].to(device)
-        labels = batch["labels"].to(device)
+    for epoch in range(start_epoch, num_epochs):
+        total_loss = 0
+        for step, batch in enumerate(tqdm(train_loader, desc=f"Epoch {epoch + 1}")):
+            input_ids = batch["input_ids"].to(device)
+            attention_mask = batch["attention_mask"].to(device)
+            labels = batch["labels"].to(device)
 
-        with torch.amp.autocast(device_type="cuda", dtype=torch.float16):
-            outputs = model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
-            loss = outputs.loss.mean() / gradient_accumulation_steps
+            with torch.amp.autocast(device_type="cuda", dtype=torch.float16):
+                outputs = model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
+                loss = outputs.loss.mean() / gradient_accumulation_steps
 
-        scaler.scale(loss).backward()
+            scaler.scale(loss).backward()
 
-        if (step + 1) % gradient_accumulation_steps == 0 or step == len(train_loader) - 1:
-            scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            scaler.step(optimizer)
-            scaler.update()
-            optimizer.zero_grad()
-            scheduler.step()
+            if (step + 1) % gradient_accumulation_steps == 0 or step == len(train_loader) - 1:
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                scaler.step(optimizer)
+                scaler.update()
+                optimizer.zero_grad()
+                scheduler.step()
 
-        total_loss += loss.item() * gradient_accumulation_steps
+            total_loss += loss.item() * gradient_accumulation_steps
 
-    avg_loss = total_loss / len(train_loader)
-    print(f"Epoch {epoch + 1} average loss: {avg_loss:.4f}")
+        avg_loss = total_loss / len(train_loader)
+        print(f"Epoch {epoch + 1} average loss: {avg_loss:.4f}")
 
-    # Save checkpoint after each epoch
-    save_checkpoint(epoch, model, optimizer, scheduler, scaler, checkpoint_path)
+        # Save checkpoint after each epoch
+        save_checkpoint(epoch, model, optimizer, scheduler, scaler, checkpoint_path)
 
 # --- Interactive Chat Session with History ---
 model.eval()
@@ -239,7 +243,7 @@ while True:
 
     # Tokenize the conversation history
     encoded = tokenizer(
-        conversation_history + "Bot: " + tokenizer.eos_token,
+        conversation_history + "Bot: ",
         return_tensors="pt",
         padding=True,
         truncation=True,
