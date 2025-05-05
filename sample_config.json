@@ -1,0 +1,23 @@
+{
+    "block_size": 256,
+    "batch_size": 64,
+    "grad_accum": 2,
+    "num_epochs": 20,
+    "model_name": "gpt2",
+    "vocab_size": 50257,
+    "n_positions": 1024,
+    "n_embed": 1024,
+    "n_layer": 16,
+    "n_head": 16,
+    "dataset_name": "openwebtext",
+    "dataset_split": "train",
+    "learning_rate": 3e-4,
+    "weight_decay": 0.01,
+    "warmup_steps": 1000,
+    "checkpoint_path": "model_open_web_fast_checkpoint.pt",
+    "cache_path": "model_open_web_fast_dataset.pt",
+    "max_new_tokens": 150,
+    "max_response_length": 150,
+    "temperature": 0.7,
+    "top_p": 0.9
+}
