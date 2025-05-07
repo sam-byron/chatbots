@@ -223,9 +223,13 @@ while True:
     # Append user input to conversation history
     conversation_history += f"User: {text}\n"
 
+    # Define max_new_tokens as a variable for consistency
+    max_new_tokens = config["max_new_tokens"]
+    
     # Truncate conversation history to fit within the model's maximum sequence length
-    max_history_length = tokenizer.model_max_length - config["max_new_tokens"] - 10  # Reserve space for the bot's response
-    conversation_history = conversation_history[-max_history_length:]
+    max_history_length = tokenizer.model_max_length - max_new_tokens - 10  # Reserve space for the bot's response
+    tokenized_history = tokenizer(conversation_history, truncation=True, max_length=max_history_length, return_tensors="pt")
+    conversation_history = tokenizer.decode(tokenized_history["input_ids"][0], skip_special_tokens=True)
 
     # Tokenize the conversation history
     encoded = tokenizer(
@@ -238,19 +242,31 @@ while True:
     input_ids = encoded["input_ids"].to(device)
     attention_mask = encoded["attention_mask"].to(device)
 
-    # Generate a response using `max_new_tokens`
-    output_ids = model.module.generate(
-        input_ids=input_ids,
-        attention_mask=attention_mask,
-        max_new_tokens=config["max_new_tokens"],  # Limit the number of tokens generated
-        do_sample=True,
-        temperature=config["temperature"],
-        top_p=config["top_p"],
-        pad_token_id=tokenizer.eos_token_id,  # Silences the warning
+    if isinstance(model, torch.nn.DataParallel):
+        output_ids = model.module.generate(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+        max_new_tokens=max_new_tokens,  # Limit the number of tokens generated
+            do_sample=True,
+            temperature=config["temperature"],
+            top_p=config["top_p"],
+            pad_token_id=tokenizer.eos_token_id,  # Silences the warning
+        )
+    else:
+        output_ids = model.generate(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            max_new_tokens=config["max_new_tokens"],  # Limit the number of tokens generated
+            do_sample=True,
+            temperature=config["temperature"],
+            top_p=config["top_p"],
+            pad_token_id=tokenizer.eos_token_id,  # Silences the warning
     )
 
-    # Decode the response and append it to the conversation history
+    # Decode the response
     response = tokenizer.decode(output_ids[0][input_ids.shape[1]:], skip_special_tokens=True)
+    
+    # Append the bot's response to the conversation history
     conversation_history += f"Bot: {response}\n"
 
     # Print the bot's response
