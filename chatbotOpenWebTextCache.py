@@ -79,6 +79,11 @@ def tokenize_sample(sample, tokenizer):
     """Helper function to tokenize a single sample."""
     return tokenizer.encode(sample["text"] + tokenizer.eos_token, add_special_tokens=False, truncation=True)
 
+def load_chunk(chunk_path):
+    """Helper function to load a single chunk."""
+    print(f"Loading chunk from {chunk_path}...")
+    return torch.load(chunk_path, map_location="cpu")
+
 def main():
     # --- Parse Configuration File ---
     parser = argparse.ArgumentParser(description="Chatbot Training Script")
@@ -120,8 +125,11 @@ def main():
     # Read cache_path from the configuration file
     cache_path = config["cache_path"]
 
-    if not os.path.exists(cache_path):
-        print("Tokenizing and caching the dataset...")
+    # Check if chunk files exist
+    chunk_paths = glob.glob(f"{cache_path}_chunk_*.pt")  # Find all chunk files
+
+    if len(chunk_paths) == 0:
+        print("No cached chunks found. Tokenizing and caching the dataset...")
         # Load OpenWebText dataset in streaming mode
         hf_ds = load_dataset("openwebtext", split="train", streaming=True, trust_remote_code=True)
         print("Streaming the dataset...")
@@ -157,16 +165,15 @@ def main():
 
         print(f"Loaded {len(tokenized_texts)} samples from saved chunks.")
     else:
-        print(f"Cache already exists at {cache_path}")
-        # Load all chunked files
-        chunk_paths = glob.glob(f"{cache_path}_chunk_*.pt")  # Find all chunk files
+        print(f"Cached chunks found. Loading tokenized dataset from cache...")
         print(f"Found {len(chunk_paths)} chunks.")
 
-        tokenized_texts = []
-        for chunk_path in chunk_paths:
-            print(f"Loading chunk from {chunk_path}...")
-            tokenized_texts.extend(torch.load(chunk_path, map_location="cpu"))
+        # Use multiprocessing to load chunks in parallel
+        with Pool(min(cpu_count(), len(chunk_paths))) as pool:
+            tokenized_texts_chunks = pool.map(load_chunk, chunk_paths)
 
+        # Flatten the list of chunks into a single list
+        tokenized_texts = [item for sublist in tokenized_texts_chunks for item in sublist]
         print(f"Loaded {len(tokenized_texts)} samples from cache.")
 
     # 3) Dataset and DataLoader setup
