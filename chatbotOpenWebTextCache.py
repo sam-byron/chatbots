@@ -7,7 +7,7 @@ from transformers import GPT2LMHeadModel, GPT2Tokenizer, GPT2Config, get_schedul
 from torch.optim import AdamW
 from datasets import load_dataset
 from tqdm import tqdm
-from multiprocessing import Pool
+from multiprocessing import Pool, cpu_count
 import argparse
 
 class ChatDataset(IterableDataset):
@@ -60,6 +60,23 @@ def load_checkpoint(checkpoint_path="checkpoint.pt"):
         print("No checkpoint found. Starting from scratch.")
         return None
 
+def batch_generator(dataset, batch_size, max_samples):
+    """Generate batches of samples from a streaming dataset."""
+    batch = []
+    for i, sample in enumerate(dataset):
+        if i >= max_samples:
+            break
+        batch.append(sample)
+        if len(batch) == batch_size:
+            yield batch
+            batch = []
+    if batch:  # Yield the last batch if it's not empty
+        yield batch
+
+def tokenize_sample(sample, tokenizer):
+    """Helper function to tokenize a single sample."""
+    return tokenizer.encode(sample["text"] + tokenizer.eos_token, add_special_tokens=False, truncation=True)
+
 def main():
     # --- Parse Configuration File ---
     parser = argparse.ArgumentParser(description="Chatbot Training Script")
@@ -107,14 +124,20 @@ def main():
         hf_ds = load_dataset("openwebtext", split="train", streaming=True, trust_remote_code=True)
         print("Streaming the dataset...")
 
-        # Tokenize and cache the dataset
+        # Limit the dataset to 1,000,000 samples and process in chunks
+        num_samples = 1000000
+        chunk_size = 100000  # Process 100,000 samples at a time
         tokenized_texts = []
-        for i, sample in enumerate(hf_ds):
-            if i >= 100000:  # Limit the number of samples for memory constraints
-                break
-            tokenized_texts.append(
-                tokenizer.encode(sample["text"] + tokenizer.eos_token, add_special_tokens=False, truncation=True)
-            )
+        num_workers = min(cpu_count(), 64)  # Use up to 64 CPU cores
+        print(f"Using {num_workers} CPU cores for tokenization.")
+
+        with Pool(num_workers) as pool:
+            for i, sample_chunk in enumerate(batch_generator(hf_ds, chunk_size, num_samples)):
+                print(f"Processing chunk {i + 1}...")
+                tokenized_chunk = pool.starmap(tokenize_sample, [(sample, tokenizer) for sample in sample_chunk])
+                tokenized_texts.extend(tokenized_chunk)
+
+        # Save the tokenized dataset to the cache
         torch.save(tokenized_texts, cache_path)
         print(f"Cached {len(tokenized_texts)} samples to {cache_path}")
     else:
