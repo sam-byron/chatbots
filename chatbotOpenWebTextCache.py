@@ -9,6 +9,8 @@ from datasets import load_dataset
 from tqdm import tqdm
 from multiprocessing import Pool, cpu_count
 import argparse
+import glob
+from functools import partial
 
 class ChatDataset(IterableDataset):
         def __init__(self, tokenized_texts, block_size=256):
@@ -89,7 +91,7 @@ def main():
 
     # 1) Hyperparameters & device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    num_cpu = os.cpu_count() - 8  # Reserve some CPU cores for other tasks
+    num_cpu = os.cpu_count() - 4  # Reserve some CPU cores for other tasks
     block_size = config["block_size"]
     batch_size = config["batch_size"]
     grad_accum = config["grad_accum"]
@@ -127,22 +129,45 @@ def main():
         # Limit the dataset to 1,000,000 samples and process in chunks
         num_samples = 1000000
         chunk_size = 100000  # Process 100,000 samples at a time
-        tokenized_texts = []
-        num_workers = min(cpu_count(), 64)  # Use up to 64 CPU cores
+        num_workers = min(cpu_count(), 96)  # Use up to 96 CPU cores
         print(f"Using {num_workers} CPU cores for tokenization.")
+
+        # Create a partial function with the tokenizer pre-filled
+        tokenize_with_tokenizer = partial(tokenize_sample, tokenizer=tokenizer)
 
         with Pool(num_workers) as pool:
             for i, sample_chunk in enumerate(batch_generator(hf_ds, chunk_size, num_samples)):
                 print(f"Processing chunk {i + 1}...")
-                tokenized_chunk = pool.starmap(tokenize_sample, [(sample, tokenizer) for sample in sample_chunk])
-                tokenized_texts.extend(tokenized_chunk)
+                tokenized_chunk = pool.map(tokenize_with_tokenizer, sample_chunk)
 
-        # Save the tokenized dataset to the cache
-        torch.save(tokenized_texts, cache_path)
-        print(f"Cached {len(tokenized_texts)} samples to {cache_path}")
+                # Save each chunk separately
+                chunk_path = f"{cache_path}_chunk_{i + 1}.pt"
+                torch.save(tokenized_chunk, chunk_path)
+                print(f"Saved chunk {i + 1} to {chunk_path}")
+
+        # After saving the chunks, load them back into `tokenized_texts`
+        print("Loading tokenized dataset from saved chunks...")
+        chunk_paths = glob.glob(f"{cache_path}_chunk_*.pt")  # Find all chunk files
+        print(f"Found {len(chunk_paths)} chunks.")
+
+        tokenized_texts = []
+        for chunk_path in chunk_paths:
+            print(f"Loading chunk from {chunk_path}...")
+            tokenized_texts.extend(torch.load(chunk_path, map_location="cpu"))
+
+        print(f"Loaded {len(tokenized_texts)} samples from saved chunks.")
     else:
-        print(f"Loading tokenized dataset from cache: {cache_path}")
-        tokenized_texts = torch.load(cache_path)
+        print(f"Cache already exists at {cache_path}")
+        # Load all chunked files
+        chunk_paths = glob.glob(f"{cache_path}_chunk_*.pt")  # Find all chunk files
+        print(f"Found {len(chunk_paths)} chunks.")
+
+        tokenized_texts = []
+        for chunk_path in chunk_paths:
+            print(f"Loading chunk from {chunk_path}...")
+            tokenized_texts.extend(torch.load(chunk_path, map_location="cpu"))
+
+        print(f"Loaded {len(tokenized_texts)} samples from cache.")
 
     # 3) Dataset and DataLoader setup
     
@@ -207,6 +232,7 @@ def main():
 
         for epoch in range(start_epoch, num_epochs):
             total_loss = 0
+            print(f"Starting Epoch {epoch + 1}/{num_epochs}...")
             for step, batch in enumerate(tqdm(train_loader, desc=f"Epoch {epoch + 1}")):
                 input_ids = batch["input_ids"].to(device)
                 attention_mask = batch["attention_mask"].to(device)
@@ -215,6 +241,10 @@ def main():
                 with torch.amp.autocast(device_type="cuda", dtype=torch.float16):
                     outputs = model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
                     loss = outputs.loss.mean() / gradient_accumulation_steps
+
+                # Print the loss for the current step
+                if (step + 1) % 1000 == 0:
+                    print(f"Epoch {epoch + 1}, Step {step + 1}/{len(train_loader)}, Loss: {loss.item():.4f}")
 
                 scaler.scale(loss).backward()
 
