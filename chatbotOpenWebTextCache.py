@@ -3,7 +3,7 @@ import math
 import torch
 import json
 from torch.utils.data import DataLoader, IterableDataset, get_worker_info
-from transformers import GPT2LMHeadModel, GPT2Tokenizer, GPT2Config, get_scheduler
+from transformers import GPT2LMHeadModel, GPT2Config, GPT2Tokenizer, get_scheduler
 from torch.optim import AdamW
 from datasets import load_dataset
 from tqdm import tqdm
@@ -11,6 +11,8 @@ from multiprocessing import Pool, cpu_count
 import argparse
 import glob
 from functools import partial
+from interactive_chat import start_chat_session
+import time  # Add this import at the top of the file
 
 class ChatDataset(IterableDataset):
         def __init__(self, tokenized_texts, block_size=256):
@@ -237,6 +239,9 @@ def main():
         gradient_accumulation_steps = grad_accum
         model.train()
 
+        # Track time for periodic checkpoint saving
+        last_checkpoint_time = time.time()
+
         for epoch in range(start_epoch, num_epochs):
             total_loss = 0
             print(f"Starting Epoch {epoch + 1}/{num_epochs}...")
@@ -265,75 +270,20 @@ def main():
 
                 total_loss += loss.item() * gradient_accumulation_steps
 
+                # Save checkpoint every 15 minutes
+                current_time = time.time()
+                if current_time - last_checkpoint_time >= 15 * 60:  # 15 minutes in seconds
+                    save_checkpoint(epoch, model, optimizer, scheduler, scaler, checkpoint_path)
+                    last_checkpoint_time = current_time
+
             avg_loss = total_loss / len(train_loader)
             print(f"Epoch {epoch + 1} average loss: {avg_loss:.4f}")
 
-            # Save checkpoint after each epoch
+            # Save checkpoint at the end of each epoch
             save_checkpoint(epoch, model, optimizer, scheduler, scaler, checkpoint_path)
 
-    # --- Interactive Chat Session with History ---
-    model.eval()
-    print("Chat session started (type 'quit' to exit)")
-
-    # Initialize conversation history
-    conversation_history = ""
-
-    while True:
-        text = input("You: ")
-        if text.lower() == "quit":
-            break
-
-        # Append user input to conversation history
-        conversation_history += f"User: {text}\n"
-
-        # Define max_new_tokens as a variable for consistency
-        max_new_tokens = config["max_new_tokens"]
-        
-        # Truncate conversation history to fit within the model's maximum sequence length
-        max_history_length = tokenizer.model_max_length - max_new_tokens - 10  # Reserve space for the bot's response
-        tokenized_history = tokenizer(conversation_history, truncation=True, max_length=max_history_length, return_tensors="pt")
-        conversation_history = tokenizer.decode(tokenized_history["input_ids"][0], skip_special_tokens=True)
-
-        # Tokenize the conversation history
-        encoded = tokenizer(
-            conversation_history + "Bot: ",
-            return_tensors="pt",
-            padding=True,
-            truncation=True,
-            max_length=tokenizer.model_max_length,
-        )
-        input_ids = encoded["input_ids"].to(device)
-        attention_mask = encoded["attention_mask"].to(device)
-
-        if isinstance(model, torch.nn.DataParallel):
-            output_ids = model.module.generate(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-            max_new_tokens=max_new_tokens,  # Limit the number of tokens generated
-                do_sample=True,
-                temperature=config["temperature"],
-                top_p=config["top_p"],
-                pad_token_id=tokenizer.eos_token_id,  # Silences the warning
-            )
-        else:
-            output_ids = model.generate(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                max_new_tokens=config["max_new_tokens"],  # Limit the number of tokens generated
-                do_sample=True,
-                temperature=config["temperature"],
-                top_p=config["top_p"],
-                pad_token_id=tokenizer.eos_token_id,  # Silences the warning
-        )
-
-        # Decode the response
-        response = tokenizer.decode(output_ids[0][input_ids.shape[1]:], skip_special_tokens=True)
-        
-        # Append the bot's response to the conversation history
-        conversation_history += f"Bot: {response}\n"
-
-        # Print the bot's response
-        print(f"Bot: {response}")
+    # --- Interactive Chat Session ---
+    start_chat_session(model_path=config["model_name"], config=config)
 
 if __name__ == "__main__":
     main()
