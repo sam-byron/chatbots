@@ -51,7 +51,7 @@ def start_chat_session(model_path, config):
             break
 
         # Append user input to conversation history
-        conversation_history += f"User: {text}\n"
+        conversation_history = f"{text}\n"
 
         # Define max_new_tokens as a variable for consistency
         max_new_tokens = config.get("max_new_tokens", 50)  # Default to 50 if not specified
@@ -63,7 +63,7 @@ def start_chat_session(model_path, config):
 
         # Tokenize the conversation history
         encoded = tokenizer(
-            conversation_history + "Bot: ",
+            conversation_history,
             return_tensors="pt",
             padding=True,
             truncation=True,

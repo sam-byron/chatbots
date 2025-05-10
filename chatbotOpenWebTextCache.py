@@ -212,6 +212,7 @@ def main():
         num_workers=num_cpu,
         pin_memory=True,
         collate_fn=collate_fn,
+        prefetch_factor=2,  # Prefetch 2 batches per worker. No increase in performance with 2
     )
     print(f"DataLoader created")
     # Optimizer, Scheduler, AMP scaler
