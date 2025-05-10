@@ -1,5 +1,6 @@
 import os
 import math
+import random
 import torch
 import json
 from torch.utils.data import DataLoader, IterableDataset, get_worker_info
@@ -86,6 +87,31 @@ def load_chunk(chunk_path):
     print(f"Loading chunk from {chunk_path}...")
     return torch.load(chunk_path, map_location="cpu")
 
+def evaluate_perplexity(model, test_loader, device):
+    """Evaluate perplexity on the test set."""
+    model.eval()  # Set the model to evaluation mode
+    total_loss = 0
+    total_tokens = 0
+
+    with torch.no_grad():  # Disable gradient computation
+        for batch in tqdm(test_loader, desc="Evaluating Perplexity"):
+            input_ids = batch["input_ids"].to(device)
+            attention_mask = batch["attention_mask"].to(device)
+            labels = batch["labels"].to(device)
+
+            # Forward pass
+            outputs = model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
+            loss = outputs.loss.mean()
+
+            # Accumulate loss and token count
+            total_loss += loss.item() * input_ids.size(0)  # Multiply by batch size
+            total_tokens += input_ids.size(0)
+
+    # Calculate average loss and perplexity
+    avg_loss = total_loss / total_tokens
+    perplexity = torch.exp(torch.tensor(avg_loss))
+    return avg_loss, perplexity
+
 def main():
     # --- Parse Configuration File ---
     parser = argparse.ArgumentParser(description="Chatbot Training Script")
@@ -143,9 +169,9 @@ def main():
         print("Streaming the dataset...")
 
         # Limit the dataset to 1,000,000 samples and process in chunks
-        num_samples = 10000
-        chunk_size = 1000  # Process 100,000 samples at a time
-        num_workers = min(cpu_count(), 16)  # Use up to 32 CPU cores
+        num_samples = 100000
+        chunk_size = 10000  # Process 100,000 samples at a time
+        num_workers = min(cpu_count(), 32)  # Use up to 32 CPU cores
         print(f"Using {num_workers} CPU cores for tokenization.")
 
         # Create a partial function with the tokenizer pre-filled
@@ -186,8 +212,16 @@ def main():
 
     # 3) Dataset and DataLoader setup
     
+    # shuffle tokenized_texts
+    print("Shuffling tokenized texts...")
+    random.shuffle(tokenized_texts)
+    print(f"Shuffled {len(tokenized_texts)} samples.")
+    split_index = int(0.75 * len(tokenized_texts))
+    train_texts = tokenized_texts[:split_index]
+    test_texts = tokenized_texts[split_index:]
 
-    dataset = ChatDataset(tokenized_texts, block_size=block_size)
+    dataset = ChatDataset(train_texts, block_size=block_size)
+    test_dataset = ChatDataset(test_texts, block_size=block_size)
     print(f"Dataset created")
 
     def collate_fn(batch):
@@ -220,6 +254,16 @@ def main():
         collate_fn=collate_fn,
         prefetch_factor=2,  # Prefetch 2 batches per worker. No increase in performance with 2
     )
+
+    test_loader = DataLoader(
+        test_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_cpu,
+        pin_memory=True,
+        collate_fn=collate_fn,
+    )
+
     print(f"DataLoader created")
     # Optimizer, Scheduler, AMP scaler
     optimizer = AdamW(model.parameters(), lr=config["learning_rate"], weight_decay=config["weight_decay"])
@@ -259,10 +303,6 @@ def main():
                     outputs = model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
                     loss = outputs.loss.mean()
 
-                # Print the loss for the current step
-                if (step + 1) % 1000 == 0:
-                    print(f"Epoch {epoch + 1}, Step {step + 1}/{len(train_loader)}, Loss: {loss.item():.4f}")
-
                 scaler.scale(loss).backward()
 
                 scaler.unscale_(optimizer)
@@ -280,14 +320,25 @@ def main():
                     save_checkpoint(epoch, model, optimizer, scheduler, scaler, checkpoint_path)
                     last_checkpoint_time = current_time
 
+            # Print the loss for the current step
+            if (step + 1) % 1000 == 0:
+                print(f"Epoch {epoch + 1}, Step {step + 1}/{len(train_loader)}, Loss: {loss.item():.4f}")
+                # # Evaluate perplexity on the test set
+                # test_loss, perplexity = evaluate_perplexity(model, test_loader, device)
+                # print(f"Epoch {epoch + 1} Test Loss: {test_loss:.4f}, Perplexity: {perplexity:.4f}")
+
             avg_loss = total_loss / len(train_loader)
             print(f"Epoch {epoch + 1} average loss: {avg_loss:.4f}")
+
+             # Evaluate perplexity on the test set
+            test_loss, perplexity = evaluate_perplexity(model, test_loader, device)
+            print(f"Epoch {epoch + 1} Test Loss: {test_loss:.4f}, Perplexity: {perplexity:.4f}")
 
             # Save checkpoint at the end of each epoch
             save_checkpoint(epoch, model, optimizer, scheduler, scaler, checkpoint_path)
 
     # --- Interactive Chat Session ---
-    start_chat_session(model_path=config["checkpoint_path"], config=config)
+    start_chat_session(checkpoint_path, config=config)
 
 if __name__ == "__main__":
     main()
