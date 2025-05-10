@@ -112,6 +112,25 @@ def evaluate_perplexity(model, test_loader, device):
     perplexity = torch.exp(torch.tensor(avg_loss))
     return avg_loss, perplexity
 
+def create_test_subset(test_texts, num_samples, block_size, batch_size, num_cpu, collate_fn):
+        """Create a subset of the test set and return a DataLoader."""
+        random.seed(42)  # Set seed for reproducibility
+        subset_indices = random.sample(range(len(test_texts)), num_samples)  # Randomly sample indices
+        test_subset_texts = [test_texts[i] for i in subset_indices]  # Create a subset of test_texts
+        test_subset = ChatDataset(test_subset_texts, block_size=block_size)  # Create a ChatDataset for the subset
+        print(f"Test subset created with {len(test_subset_texts)} samples")
+
+        # Create a DataLoader for the test subset
+        test_subset_loader = DataLoader(
+            test_subset,
+            batch_size=batch_size,
+            shuffle=False,
+            num_workers=num_cpu,
+            pin_memory=True,
+            collate_fn=collate_fn,
+        )
+        return test_subset_loader
+
 def main():
     # --- Parse Configuration File ---
     parser = argparse.ArgumentParser(description="Chatbot Training Script")
@@ -169,8 +188,8 @@ def main():
         print("Streaming the dataset...")
 
         # Limit the dataset to 1,000,000 samples and process in chunks
-        num_samples = 100000
-        chunk_size = 10000  # Process 100,000 samples at a time
+        num_samples = 1000000
+        chunk_size = 100000  # Process 100,000 samples at a time
         num_workers = min(cpu_count(), 32)  # Use up to 32 CPU cores
         print(f"Using {num_workers} CPU cores for tokenization.")
 
@@ -316,16 +335,14 @@ def main():
 
                 # Save checkpoint every 15 minutes
                 current_time = time.time()
-                if current_time - last_checkpoint_time >= 15 * 60:  # 15 minutes in seconds
+                if current_time - last_checkpoint_time >= 3 * 60:  # 15 minutes in seconds
                     save_checkpoint(epoch, model, optimizer, scheduler, scaler, checkpoint_path)
                     last_checkpoint_time = current_time
-
-            # Print the loss for the current step
-            if (step + 1) % 1000 == 0:
-                print(f"Epoch {epoch + 1}, Step {step + 1}/{len(train_loader)}, Loss: {loss.item():.4f}")
-                # # Evaluate perplexity on the test set
-                # test_loss, perplexity = evaluate_perplexity(model, test_loader, device)
-                # print(f"Epoch {epoch + 1} Test Loss: {test_loss:.4f}, Perplexity: {perplexity:.4f}")
+                    print(f"Epoch {epoch + 1}, Step {step + 1}/{len(train_loader)}, Loss: {loss.item():.4f}")
+                    # Evaluate perplexity on a subset of the test set
+                    test_subset_loader = create_test_subset(test_texts, 10000, block_size, batch_size, num_cpu, collate_fn)
+                    test_subset_loss, perplexity = evaluate_perplexity(model, test_subset_loader, device)
+                    print(f"Epoch {epoch + 1} Subset test Loss: {test_subset_loss:.4f}, Perplexity: {perplexity:.4f}")
 
             avg_loss = total_loss / len(train_loader)
             print(f"Epoch {epoch + 1} average loss: {avg_loss:.4f}")
@@ -341,4 +358,5 @@ def main():
     start_chat_session(checkpoint_path, config=config)
 
 if __name__ == "__main__":
+    # torch.cuda.set_per_process_memory_fraction(0.8, device=0)  # Limit to 80% of GPU memory
     main()
