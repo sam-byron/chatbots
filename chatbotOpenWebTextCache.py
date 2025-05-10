@@ -124,11 +124,17 @@ def main():
     model = torch.nn.DataParallel(model)
     model.to(device)
 
-    # Read cache_path from the configuration file
-    cache_path = config["cache_path"]
+    # Read cache_path and checkpoint_path from the configuration file
+    cache_path = args.config_path.replace(".json", "")  # Create a cache folder based on the config file name
+    checkpoint_path = os.path.join(cache_path, "checkpoint.pt")  # Save checkpoint under the cache folder
+
+    # Ensure the cache folder exists
+    if not os.path.exists(cache_path):
+        os.makedirs(cache_path)
+        print(f"Created cache folder: {cache_path}")
 
     # Check if chunk files exist
-    chunk_paths = glob.glob(f"{cache_path}_chunk_*.pt")  # Find all chunk files
+    chunk_paths = glob.glob(os.path.join(cache_path, "chunk_*.pt"))  # Find all chunk files
 
     if len(chunk_paths) == 0:
         print("No cached chunks found. Tokenizing and caching the dataset...")
@@ -137,9 +143,9 @@ def main():
         print("Streaming the dataset...")
 
         # Limit the dataset to 1,000,000 samples and process in chunks
-        num_samples = 1000000
-        chunk_size = 100000  # Process 100,000 samples at a time
-        num_workers = min(cpu_count(), 96)  # Use up to 96 CPU cores
+        num_samples = 10000
+        chunk_size = 1000  # Process 100,000 samples at a time
+        num_workers = min(cpu_count(), 16)  # Use up to 32 CPU cores
         print(f"Using {num_workers} CPU cores for tokenization.")
 
         # Create a partial function with the tokenizer pre-filled
@@ -150,14 +156,14 @@ def main():
                 print(f"Processing chunk {i + 1}...")
                 tokenized_chunk = pool.map(tokenize_with_tokenizer, sample_chunk)
 
-                # Save each chunk separately
-                chunk_path = f"{cache_path}_chunk_{i + 1}.pt"
+                # Save each chunk separately under the cache folder
+                chunk_path = os.path.join(cache_path, f"chunk_{i + 1}.pt")
                 torch.save(tokenized_chunk, chunk_path)
                 print(f"Saved chunk {i + 1} to {chunk_path}")
 
         # After saving the chunks, load them back into `tokenized_texts`
         print("Loading tokenized dataset from saved chunks...")
-        chunk_paths = glob.glob(f"{cache_path}_chunk_*.pt")  # Find all chunk files
+        chunk_paths = glob.glob(os.path.join(cache_path, "chunk_*.pt"))  # Find all chunk files
         print(f"Found {len(chunk_paths)} chunks.")
 
         tokenized_texts = []
@@ -221,7 +227,6 @@ def main():
     scaler = torch.amp.GradScaler('cuda')
 
     # --- Load Checkpoint if Available ---
-    checkpoint_path = config["checkpoint_path"]
     checkpoint = load_checkpoint(checkpoint_path)
 
     start_epoch = 0
@@ -237,7 +242,6 @@ def main():
     else:
         print(f"Resuming training from epoch {start_epoch + 1} of {num_epochs}")
         # --- Training Loop with Resumption ---
-        gradient_accumulation_steps = grad_accum
         model.train()
 
         # Track time for periodic checkpoint saving
@@ -253,7 +257,7 @@ def main():
 
                 with torch.amp.autocast(device_type="cuda", dtype=torch.float16):
                     outputs = model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
-                    loss = outputs.loss.mean() / gradient_accumulation_steps
+                    loss = outputs.loss.mean()
 
                 # Print the loss for the current step
                 if (step + 1) % 1000 == 0:
@@ -261,15 +265,14 @@ def main():
 
                 scaler.scale(loss).backward()
 
-                if (step + 1) % gradient_accumulation_steps == 0 or step == len(train_loader) - 1:
-                    scaler.unscale_(optimizer)
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-                    scaler.step(optimizer)
-                    scaler.update()
-                    optimizer.zero_grad()
-                    scheduler.step()
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                scaler.step(optimizer)
+                scaler.update()
+                optimizer.zero_grad()
+                scheduler.step()
 
-                total_loss += loss.item() * gradient_accumulation_steps
+                total_loss += loss.item()
 
                 # Save checkpoint every 15 minutes
                 current_time = time.time()
@@ -284,7 +287,7 @@ def main():
             save_checkpoint(epoch, model, optimizer, scheduler, scaler, checkpoint_path)
 
     # --- Interactive Chat Session ---
-    start_chat_session(model_path=config["model_name"], config=config)
+    start_chat_session(model_path=config["checkpoint_path"], config=config)
 
 if __name__ == "__main__":
     main()
