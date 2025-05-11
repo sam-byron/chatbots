@@ -188,9 +188,9 @@ def main():
         print("Streaming the dataset...")
 
         # Limit the dataset to 1,000,000 samples and process in chunks
-        num_samples = 1000000
-        chunk_size = 100000  # Process 100,000 samples at a time
-        num_workers = min(cpu_count(), 32)  # Use up to 32 CPU cores
+        num_samples = config["num_samples"]
+        chunk_size = config["chunk_size"]
+        num_workers = min(cpu_count(), 64)  # Use up to 32 CPU cores
         print(f"Using {num_workers} CPU cores for tokenization.")
 
         # Create a partial function with the tokenizer pre-filled
@@ -212,9 +212,9 @@ def main():
         print(f"Found {len(chunk_paths)} chunks.")
 
         tokenized_texts = []
-        for chunk_path in chunk_paths:
-            print(f"Loading chunk from {chunk_path}...")
-            tokenized_texts.extend(torch.load(chunk_path, map_location="cpu"))
+        # Use multiprocessing to load chunks in parallel
+        with Pool(min(cpu_count(), len(chunk_paths))) as pool:
+            tokenized_texts_chunks = pool.map(load_chunk, chunk_paths)
 
         print(f"Loaded {len(tokenized_texts)} samples from saved chunks.")
     else:
@@ -335,7 +335,7 @@ def main():
 
                 # Save checkpoint every 15 minutes
                 current_time = time.time()
-                if current_time - last_checkpoint_time >= 3 * 60:  # 15 minutes in seconds
+                if current_time - last_checkpoint_time >= 15 * 60:  # 15 minutes in seconds
                     save_checkpoint(epoch, model, optimizer, scheduler, scaler, checkpoint_path)
                     last_checkpoint_time = current_time
                     print(f"Epoch {epoch + 1}, Step {step + 1}/{len(train_loader)}, Loss: {loss.item():.4f}")
