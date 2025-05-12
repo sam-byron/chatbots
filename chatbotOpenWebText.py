@@ -14,122 +14,10 @@ import glob
 from functools import partial
 from interactive_chat import start_chat_session
 import time  # Add this import at the top of the file
-
-class ChatDataset(IterableDataset):
-        def __init__(self, tokenized_texts, block_size=256):
-            self.tokenized_texts = tokenized_texts
-            self.block_size = block_size
-            self.total_chunks = self._calculate_total_chunks()
-
-        def _calculate_total_chunks(self):
-            total_chunks = 0
-            for ids in self.tokenized_texts:
-                total_chunks += len(ids) // self.block_size
-            return total_chunks
-
-        def __len__(self):
-            return self.total_chunks
-
-        def __iter__(self):
-            worker_info = get_worker_info()
-            if worker_info is None:
-                start, end = 0, len(self.tokenized_texts)
-            else:
-                per_worker = math.ceil(len(self.tokenized_texts) / worker_info.num_workers)
-                start = worker_info.id * per_worker
-                end = min(start + per_worker, len(self.tokenized_texts))
-
-            for ids in self.tokenized_texts[start:end]:
-                for i in range(0, len(ids), self.block_size):
-                    chunk = ids[i : i + self.block_size]
-                    if len(chunk) == self.block_size:
-                        yield chunk
-
-# --- Checkpoint Save/Load Functions ---
-def save_checkpoint(epoch, model, optimizer, scheduler, scaler, checkpoint_path="checkpoint.pt"):
-    torch.save({
-        "epoch": epoch,
-        "model_state_dict": model.module.state_dict(),
-        "optimizer_state_dict": optimizer.state_dict(),
-        "scheduler_state_dict": scheduler.state_dict(),
-        "scaler_state_dict": scaler.state_dict(),
-    }, checkpoint_path)
-    print(f"Checkpoint saved at epoch {epoch + 1}")
-
-def load_checkpoint(checkpoint_path="checkpoint.pt"):
-    if os.path.exists(checkpoint_path):
-        checkpoint = torch.load(checkpoint_path)
-        print(f"Checkpoint loaded from {checkpoint_path}")
-        return checkpoint
-    else:
-        print("No checkpoint found. Starting from scratch.")
-        return None
-
-def batch_generator(dataset, batch_size, max_samples):
-    """Generate batches of samples from a streaming dataset."""
-    batch = []
-    for i, sample in enumerate(dataset):
-        if i >= max_samples:
-            break
-        batch.append(sample)
-        if len(batch) == batch_size:
-            yield batch
-            batch = []
-    if batch:  # Yield the last batch if it's not empty
-        yield batch
-
-def tokenize_sample(sample, tokenizer):
-    """Helper function to tokenize a single sample."""
-    return tokenizer.encode(sample["text"] + tokenizer.eos_token, add_special_tokens=False, truncation=True)
-
-def load_chunk(chunk_path):
-    """Helper function to load a single chunk."""
-    print(f"Loading chunk from {chunk_path}...")
-    return torch.load(chunk_path, map_location="cpu")
-
-def evaluate_perplexity(model, test_loader, device):
-    """Evaluate perplexity on the test set."""
-    model.eval()  # Set the model to evaluation mode
-    total_loss = 0
-    total_tokens = 0
-
-    with torch.no_grad():  # Disable gradient computation
-        for batch in tqdm(test_loader, desc="Evaluating Perplexity"):
-            input_ids = batch["input_ids"].to(device)
-            attention_mask = batch["attention_mask"].to(device)
-            labels = batch["labels"].to(device)
-
-            # Forward pass
-            outputs = model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
-            loss = outputs.loss.mean()
-
-            # Accumulate loss and token count
-            total_loss += loss.item() * input_ids.size(0)  # Multiply by batch size
-            total_tokens += input_ids.size(0)
-
-    # Calculate average loss and perplexity
-    avg_loss = total_loss / total_tokens
-    perplexity = torch.exp(torch.tensor(avg_loss))
-    return avg_loss, perplexity
-
-def create_test_subset(test_texts, num_samples, block_size, batch_size, num_cpu, collate_fn):
-        """Create a subset of the test set and return a DataLoader."""
-        random.seed(42)  # Set seed for reproducibility
-        subset_indices = random.sample(range(len(test_texts)), num_samples)  # Randomly sample indices
-        test_subset_texts = [test_texts[i] for i in subset_indices]  # Create a subset of test_texts
-        test_subset = ChatDataset(test_subset_texts, block_size=block_size)  # Create a ChatDataset for the subset
-        print(f"Test subset created with {len(test_subset_texts)} samples")
-
-        # Create a DataLoader for the test subset
-        test_subset_loader = DataLoader(
-            test_subset,
-            batch_size=batch_size,
-            shuffle=False,
-            num_workers=num_cpu,
-            pin_memory=True,
-            collate_fn=collate_fn,
-        )
-        return test_subset_loader
+from dataset import ChatDataset
+from utils import save_checkpoint, load_checkpoint, batch_generator, tokenize_sample, load_chunk, process_and_save_chunk, batch_generator_parallel
+from evaluation import evaluate_perplexity, create_test_subset
+from interactive_chat import start_chat_session
 
 def main():
     # --- Parse Configuration File ---
@@ -159,6 +47,7 @@ def main():
         n_embd=config["n_embed"],
         n_layer=config["n_layer"],
         n_head=config["n_head"],
+        loss_type="cross_entropy", # Original loss used to train GPT-2
     )
 
     # tell the tokenizer what its max context really is
@@ -184,50 +73,43 @@ def main():
     if len(chunk_paths) == 0:
         print("No cached chunks found. Tokenizing and caching the dataset...")
         # Load OpenWebText dataset in streaming mode
-        hf_ds = load_dataset("openwebtext", split="train", streaming=True, trust_remote_code=True)
+        hf_ds = load_dataset("openwebtext", split="train", streaming=False, trust_remote_code=True)
         print("Streaming the dataset...")
 
-        # Limit the dataset to 1,000,000 samples and process in chunks
+        # Limit the dataset to a specific number of samples and process in chunks
         num_samples = config["num_samples"]
         chunk_size = config["chunk_size"]
-        num_workers = min(cpu_count(), 64)  # Use up to 32 CPU cores
+        num_workers = min(cpu_count(), 120)  # Use up to 120 CPU cores
         print(f"Using {num_workers} CPU cores for tokenization.")
 
         # Create a partial function with the tokenizer pre-filled
         tokenize_with_tokenizer = partial(tokenize_sample, tokenizer=tokenizer)
 
+        print("Processing dataset in chunks...")
+        # Use batch_generator_parallel to generate chunks in parallel
+        chunk_args = [
+            (sample_chunk, i, cache_path, tokenize_with_tokenizer)
+            for i, sample_chunk in enumerate(batch_generator_parallel(hf_ds, chunk_size, num_samples, num_workers))
+        ]
+        print(f"Total chunks to process: {len(chunk_args)}")
+
+        # Process chunks in parallel
         with Pool(num_workers) as pool:
-            for i, sample_chunk in enumerate(batch_generator(hf_ds, chunk_size, num_samples)):
-                print(f"Processing chunk {i + 1}...")
-                tokenized_chunk = pool.map(tokenize_with_tokenizer, sample_chunk)
+            chunk_paths = pool.map(process_and_save_chunk, chunk_args)
 
-                # Save each chunk separately under the cache folder
-                chunk_path = os.path.join(cache_path, f"chunk_{i + 1}.pt")
-                torch.save(tokenized_chunk, chunk_path)
-                print(f"Saved chunk {i + 1} to {chunk_path}")
+        print(f"Processed and saved {len(chunk_paths)} chunks.")
+    
+    chunk_paths = glob.glob(os.path.join(cache_path, "chunk_*.pt"))  # Find all chunk files
+    print(f"Cached chunks found. Loading tokenized dataset from cache...")
+    print(f"Found {len(chunk_paths)} chunks.")
 
-        # After saving the chunks, load them back into `tokenized_texts`
-        print("Loading tokenized dataset from saved chunks...")
-        chunk_paths = glob.glob(os.path.join(cache_path, "chunk_*.pt"))  # Find all chunk files
-        print(f"Found {len(chunk_paths)} chunks.")
+    # Use multiprocessing to load chunks in parallel
+    with Pool(min(cpu_count(), len(chunk_paths))) as pool:
+        tokenized_texts_chunks = pool.map(load_chunk, chunk_paths)
 
-        tokenized_texts = []
-        # Use multiprocessing to load chunks in parallel
-        with Pool(min(cpu_count(), len(chunk_paths))) as pool:
-            tokenized_texts_chunks = pool.map(load_chunk, chunk_paths)
-
-        print(f"Loaded {len(tokenized_texts)} samples from saved chunks.")
-    else:
-        print(f"Cached chunks found. Loading tokenized dataset from cache...")
-        print(f"Found {len(chunk_paths)} chunks.")
-
-        # Use multiprocessing to load chunks in parallel
-        with Pool(min(cpu_count(), len(chunk_paths))) as pool:
-            tokenized_texts_chunks = pool.map(load_chunk, chunk_paths)
-
-        # Flatten the list of chunks into a single list
-        tokenized_texts = [item for sublist in tokenized_texts_chunks for item in sublist]
-        print(f"Loaded {len(tokenized_texts)} samples from cache.")
+    # Flatten the list of chunks into a single list
+    tokenized_texts = [item for sublist in tokenized_texts_chunks for item in sublist]
+    print(f"Loaded {len(tokenized_texts)} samples from cache.")
 
     # 3) Dataset and DataLoader setup
     
@@ -331,11 +213,11 @@ def main():
                 optimizer.zero_grad()
                 scheduler.step()
 
-                total_loss += loss.item()
+                total_loss += loss.detach().item()
 
                 # Save checkpoint every 15 minutes
                 current_time = time.time()
-                if current_time - last_checkpoint_time >= 15 * 60:  # 15 minutes in seconds
+                if current_time - last_checkpoint_time >= 30 * 60:  # 15 minutes in seconds
                     save_checkpoint(epoch, model, optimizer, scheduler, scaler, checkpoint_path)
                     last_checkpoint_time = current_time
                     print(f"Epoch {epoch + 1}, Step {step + 1}/{len(train_loader)}, Loss: {loss.item():.4f}")

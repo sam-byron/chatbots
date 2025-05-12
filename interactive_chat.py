@@ -15,7 +15,7 @@ def load_checkpoint(checkpoint_path="checkpoint.pt"):
 
 def start_chat_session(model_path, config):
     """Start an interactive chat session with the model."""
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
 
     # Load the tokenizer using the model name from the config
     tokenizer = GPT2Tokenizer.from_pretrained(config["model_name"])
