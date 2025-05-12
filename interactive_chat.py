@@ -3,6 +3,7 @@ import json
 import argparse
 from transformers import GPT2LMHeadModel, GPT2Config, GPT2Tokenizer
 import os
+import torch.nn.functional as F
 
 def load_checkpoint(checkpoint_path="checkpoint.pt"):
     if os.path.exists(checkpoint_path):
@@ -12,10 +13,23 @@ def load_checkpoint(checkpoint_path="checkpoint.pt"):
     else:
         print("No checkpoint found. Starting from scratch.")
         return None
+    
+def log_probs_from_logits(logits, labels):
+     logp = F.log_softmax(logits, dim=-1)
+     logp_label = torch.gather(logp, 2, labels.unsqueeze(2)).squeeze(-1)
+     return logp_label
+
+def sequence_logprob(model, labels, input_len=0):
+        with torch.no_grad():
+            output = model(labels)
+            log_probs = log_probs_from_logits(
+                output.logits[:, :-1, :], labels[:, 1:])
+            seq_log_prob = torch.sum(log_probs[:, input_len:])
+        return seq_log_prob.cpu().numpy()
 
 def start_chat_session(model_path, config):
     """Start an interactive chat session with the model."""
-    device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # Load the tokenizer using the model name from the config
     tokenizer = GPT2Tokenizer.from_pretrained(config["model_name"])
@@ -73,19 +87,22 @@ def start_chat_session(model_path, config):
         attention_mask = encoded["attention_mask"].to(device)
 
         # Generate the bot's response
-        output_ids = model.module.generate(
+        output_beam = model.module.generate(
             input_ids=input_ids,
             attention_mask=attention_mask,
             max_new_tokens=max_new_tokens,
-            do_sample=True,
-            temperature=config["temperature"],
-            top_p=config["top_p"],
+            do_sample=False,
+            # temperature=config["temperature"],
+            # top_p=config["top_p"],
+            num_beams=10,
             pad_token_id=tokenizer.eos_token_id,  # Silences the warning
+            no_repeat_ngram_size=3
         )
 
         # Decode the response
-        response = tokenizer.decode(output_ids[0][input_ids.shape[1]:], skip_special_tokens=True)
-
+        # output_beam = tokenizer.decode(output_ids[0][input_ids.shape[1]:], skip_special_tokens=True)
+        logp = sequence_logprob(model, output_beam, input_len=len(input_ids[0]))
+        response = tokenizer.decode(output_beam[0])
         # Append the bot's response to the conversation history
         conversation_history += f"Bot: {response}\n"
 
