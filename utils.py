@@ -40,10 +40,14 @@ def fetch_batch(args):
     dataset, start, end = args
     return list(islice(dataset, start, end))
 
-def batch_generator_parallel(dataset, batch_size, max_samples, num_workers):
-    """Generate batches in parallel using multiprocessing."""
+def batch_generator_parallel(dataset, batch_size, max_samples, num_workers, start_index=0):
+    """Generate batches in parallel using multiprocessing, starting from a specific index."""
+    # Calculate the total number of batches, starting from the given start_index
     total_batches = (max_samples + batch_size - 1) // batch_size
-    args = [(dataset, i * batch_size, (i + 1) * batch_size) for i in range(total_batches)]
+    args = [
+        (dataset, start_index + i * batch_size, start_index + (i + 1) * batch_size)
+        for i in range(total_batches)
+    ]
 
     with Pool(num_workers) as pool:
         for batch in pool.imap(fetch_batch, args):

@@ -88,7 +88,7 @@ def start_chat_session(model_path, config):
             # top_p=config["top_p"],
             num_beams=10,
             pad_token_id=tokenizer.eos_token_id,  # Silences the warning
-            no_repeat_ngram_size=5
+            no_repeat_ngram_size=3
         )
 
         # Decode the response
