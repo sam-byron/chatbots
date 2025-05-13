@@ -56,28 +56,20 @@ def start_chat_session(model_path, config):
 
     print("Chat session started (type 'quit' to exit)")
 
-    # Initialize conversation history
-    conversation_history = ""
 
     while True:
         text = input("You: ")
         if text.lower() == "quit":
             break
 
-        # Append user input to conversation history
-        conversation_history = f"{text}\n"
+        usr_input = f"{text}\n"
 
         # Define max_new_tokens as a variable for consistency
         max_new_tokens = config.get("max_new_tokens", 50)  # Default to 50 if not specified
 
-        # Truncate conversation history to fit within the model's maximum sequence length
-        max_history_length = tokenizer.model_max_length - max_new_tokens - 10  # Reserve space for the bot's response
-        tokenized_history = tokenizer(conversation_history, truncation=True, max_length=max_history_length, return_tensors="pt")
-        conversation_history = tokenizer.decode(tokenized_history["input_ids"][0], skip_special_tokens=True)
-
         # Tokenize the conversation history
         encoded = tokenizer(
-            conversation_history,
+            usr_input,
             return_tensors="pt",
             padding=True,
             truncation=True,
@@ -96,15 +88,13 @@ def start_chat_session(model_path, config):
             # top_p=config["top_p"],
             num_beams=10,
             pad_token_id=tokenizer.eos_token_id,  # Silences the warning
-            no_repeat_ngram_size=3
+            no_repeat_ngram_size=5
         )
 
         # Decode the response
-        # output_beam = tokenizer.decode(output_ids[0][input_ids.shape[1]:], skip_special_tokens=True)
         logp = sequence_logprob(model, output_beam, input_len=len(input_ids[0]))
         response = tokenizer.decode(output_beam[0])
-        # Append the bot's response to the conversation history
-        conversation_history += f"Bot: {response}\n"
+        print(f"\nlog-prob: {logp:.2f}")
 
         # Print the bot's response
         print(f"Bot: {response}")
