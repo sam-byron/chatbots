@@ -15,53 +15,14 @@ from functools import partial
 from interactive_chat import start_chat_session
 import time  # Add this import at the top of the file
 from dataset import ChatDataset
-from utils import save_checkpoint, load_checkpoint, batch_generator, tokenize_sample, load_chunk, process_and_save_chunk, batch_generator_parallel
+from utils import save_checkpoint, load_checkpoint, batch_generator, tokenize_sample, load_chunk, process_and_save_chunk, batch_generator_parallel, batch_generator_sequential
 from evaluation import evaluate_perplexity, create_test_subset
 from interactive_chat import start_chat_session
 
-def main():
-    # --- Parse Configuration File ---
-    parser = argparse.ArgumentParser(description="Chatbot Training Script")
-    parser.add_argument("--config_path", type=str, required=True, help="Path to the configuration file")
-    args = parser.parse_args()
+def prepare_data(args, config, tokenizer, num_cpu, cache_path):
 
-    # Load configuration from the specified file
-    with open(args.config_path, "r") as config_file:
-        config = json.load(config_file)
-
-    # 1) Hyperparameters & device
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    num_cpu = os.cpu_count() - 4  # Reserve some CPU cores for other tasks
     block_size = config["block_size"]
     batch_size = config["batch_size"]
-    grad_accum = config["grad_accum"]
-    num_epochs = config["num_epochs"]
-
-    # 2) Tokenizer & Model setup
-    tokenizer = GPT2Tokenizer.from_pretrained(config["model_name"])
-    tokenizer.pad_token = tokenizer.eos_token
-
-    model_config = GPT2Config(
-        vocab_size=config["vocab_size"],
-        n_positions=config["n_positions"],
-        n_embd=config["n_embed"],
-        n_layer=config["n_layer"],
-        n_head=config["n_head"],
-        loss_type="cross_entropy", # Original loss used to train GPT-2
-    )
-
-    # tell the tokenizer what its max context really is
-    tokenizer.model_max_length = model_config.n_positions
-    tokenizer.init_kwargs["model_max_length"] = model_config.n_positions
-
-    model = GPT2LMHeadModel(model_config)
-    model = torch.nn.DataParallel(model)
-    model.to(device)
-
-    # Read cache_path and checkpoint_path from the configuration file
-    cache_path = args.config_path.replace(".json", "")  # Create a cache folder based on the config file name
-    checkpoint_path = os.path.join(cache_path, "checkpoint.pt")  # Save checkpoint under the cache folder
-
     # Ensure the cache folder exists
     if not os.path.exists(cache_path):
         os.makedirs(cache_path)
@@ -149,26 +110,58 @@ def main():
     train_loader = DataLoader(
         dataset,
         batch_size=batch_size,
-        shuffle=False,
+        shuffle=True,  # Enable shuffling for better training performance
         num_workers=num_cpu,
         pin_memory=True,
         collate_fn=collate_fn,
-        prefetch_factor=2,  # Prefetch 2 batches per worker. No increase in performance with 2
+        prefetch_factor=4,  # Increase prefetch factor to 4 for better throughput
+        persistent_workers=True,  # Keep workers alive between epochs to reduce startup overhead
     )
 
     test_loader = DataLoader(
         test_dataset,
         batch_size=batch_size,
-        shuffle=False,
+        shuffle=True,
         num_workers=num_cpu,
         pin_memory=True,
         collate_fn=collate_fn,
+        prefetch_factor=4,  # Increase prefetch factor to 4 for better throughput
+        persistent_workers=True,  # Keep workers alive between epochs to reduce startup overhead
     )
 
     print(f"DataLoader created")
+
+    return train_loader, test_loader, test_texts
+
+def build_model(config, device):
+    # 2) Tokenizer & Model setup
+    
+
+    model_config = GPT2Config(
+        vocab_size=config["vocab_size"],
+        n_positions=config["n_positions"],
+        n_embd=config["n_embed"],
+        n_layer=config["n_layer"],
+        n_head=config["n_head"],
+        loss_type="cross_entropy", # Original loss used to train GPT-2
+    )
+
+    model = GPT2LMHeadModel(model_config)
+    model = torch.nn.DataParallel(model)
+    model.to(device)
+
+    return model
+
+
+def train_loop(checkpoint_path, config, model, train_loader, test_loader, device, test_texts):
+
+    num_epochs = config["num_epochs"]
+    batch_size = config["batch_size"]
+    block_size = config["block_size"]
+    num_cpu = os.cpu_count() - 4  # Reserve some CPU cores for other tasks
     # Optimizer, Scheduler, AMP scaler
     optimizer = AdamW(model.parameters(), lr=config["learning_rate"], weight_decay=config["weight_decay"])
-    scheduler = get_scheduler("cosine", optimizer, num_warmup_steps=config["warmup_steps"], num_training_steps=num_epochs)
+    scheduler = get_scheduler("cosine", optimizer, num_warmup_steps=config["warmup_steps"], num_training_steps=num_epochs * len(train_loader))
     scaler = torch.amp.GradScaler('cuda')
 
     # --- Load Checkpoint if Available ---
@@ -215,6 +208,27 @@ def main():
 
                 total_loss += loss.detach().item()
 
+                def collate_fn(batch):
+                    pad_id = tokenizer.pad_token_id
+                    B = len(batch)
+                    L = max(len(seq) for seq in batch)
+
+                    input_ids = torch.full((B, L), pad_id, dtype=torch.long)
+                    attention_mask = torch.zeros((B, L), dtype=torch.long)
+                    labels = torch.full((B, L), -100, dtype=torch.long)
+
+                    for i, seq in enumerate(batch):
+                        length = len(seq)
+                        input_ids[i, :length] = torch.tensor(seq, dtype=torch.long)
+                        attention_mask[i, :length] = 1
+                        labels[i, :length] = torch.tensor(seq, dtype=torch.long)
+
+                    return {
+                        "input_ids": input_ids,
+                        "attention_mask": attention_mask,
+                        "labels": labels,
+                    }
+
                 # Save checkpoint every 15 minutes
                 current_time = time.time()
                 if current_time - last_checkpoint_time >= 30 * 60:  # 15 minutes in seconds
@@ -236,6 +250,41 @@ def main():
             # Save checkpoint at the end of each epoch
             save_checkpoint(epoch, model, optimizer, scheduler, scaler, checkpoint_path)
 
+def main():
+
+    # --- Parse Configuration File ---
+    parser = argparse.ArgumentParser(description="Chatbot Training Script")
+    parser.add_argument("--config_path", type=str, required=True, help="Path to the configuration file")
+    args = parser.parse_args()
+    # Load configuration from the specified file
+    with open(args.config_path, "r") as config_file:
+        config = json.load(config_file)
+    # 1) Hyperparameters & device
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    num_cpu = os.cpu_count() - 4  # Reserve some CPU cores for other tasks
+    block_size = config["block_size"]
+    batch_size = config["batch_size"]
+    grad_accum = config["grad_accum"]
+    num_epochs = config["num_epochs"]
+
+    # Read cache_path and checkpoint_path from the configuration file
+    cache_path = args.config_path.replace(".json", "")  # Create a cache folder based on the config file name
+    checkpoint_path = os.path.join(cache_path, "checkpoint.pt")  # Save checkpoint under the cache folder
+
+    tokenizer = GPT2Tokenizer.from_pretrained(config["model_name"])
+    tokenizer.pad_token = tokenizer.eos_token
+     # tell the tokenizer what its max context really is
+    tokenizer.model_max_length = config["n_positions"]
+
+    # --- Prepare Data ---
+    train_loader, test_loader, test_texts = prepare_data(args, config, tokenizer, num_cpu, cache_path)
+
+    # --- Build Model ---
+    model = build_model(config, device)
+
+    # --- Training Loop ---
+    train_loop(checkpoint_path, config, model, train_loader, test_loader, device, test_texts)
+    
     # --- Interactive Chat Session ---
     start_chat_session(checkpoint_path, config=config)
 

@@ -22,6 +22,11 @@ def load_checkpoint(checkpoint_path="checkpoint.pt"):
     else:
         print("No checkpoint found. Starting from scratch.")
         return None
+    
+def batch_generator_sequential(dataset, batch_size, max_samples):
+    """Generate batches of samples from a non-streaming dataset more efficiently."""
+    for i in range(0, min(len(dataset), max_samples), batch_size):
+        yield dataset[i:i + batch_size]
 
 def batch_generator(dataset, batch_size, max_samples):
     """Generate batches of samples from a streaming dataset more efficiently."""
@@ -54,8 +59,18 @@ def batch_generator_parallel(dataset, batch_size, max_samples, num_workers, star
             yield batch
 
 def tokenize_sample(sample, tokenizer):
-    """Helper function to tokenize a single sample."""
-    return tokenizer.encode(sample["text"] + tokenizer.eos_token, add_special_tokens=False, truncation=True)
+    """Tokenize a single sample."""
+    if isinstance(sample, str):
+        # If the sample is a plain string, tokenize it directly
+        text = sample
+    elif isinstance(sample, dict) and "text" in sample:
+        # If the sample is a dictionary, extract the "text" field
+        text = sample["text"]
+    else:
+        raise ValueError(f"Unexpected sample format: {sample}")
+
+    # Tokenize the text and add the EOS token
+    return tokenizer.encode(text + tokenizer.eos_token, add_special_tokens=False, truncation=True)
 
 def load_chunk(chunk_path):
     """Helper function to load a single chunk."""
