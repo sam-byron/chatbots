@@ -153,7 +153,7 @@ def build_model(config, device):
     return model
 
 
-def train_loop(checkpoint_path, config, model, train_loader, test_loader, device, test_texts):
+def train_loop(checkpoint_path, config, model, train_loader, test_loader, device, test_texts, tokenizer):
 
     num_epochs = config["num_epochs"]
     batch_size = config["batch_size"]
@@ -277,7 +277,7 @@ def main():
     tokenizer.model_max_length = config["n_positions"]
 
     # --- Prepare Data ---
-    train_loader, test_loader, test_texts = prepare_data(args, config, tokenizer, num_cpu, cache_path)
+    train_loader, test_loader, test_texts = prepare_data(args, config, tokenizer, num_cpu, cache_path, tokenizer)
 
     # --- Build Model ---
     model = build_model(config, device)
