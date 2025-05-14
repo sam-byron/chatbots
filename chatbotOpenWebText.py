@@ -283,7 +283,7 @@ def main():
     model = build_model(config, device)
 
     # --- Training Loop ---
-    train_loop(checkpoint_path, config, model, train_loader, test_loader, device, test_texts)
+    train_loop(checkpoint_path, config, model, train_loader, test_loader, device, test_texts, tokenizer)
     
     # --- Interactive Chat Session ---
     start_chat_session(checkpoint_path, config=config)
