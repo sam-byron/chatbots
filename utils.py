@@ -23,10 +23,10 @@ def load_checkpoint(checkpoint_path="checkpoint.pt"):
         print("No checkpoint found. Starting from scratch.")
         return None
     
-def batch_generator_sequential(dataset, batch_size, max_samples):
+def batch_generator_sequential(dataset, chunk_size, max_samples):
     """Generate batches of samples from a non-streaming dataset more efficiently."""
-    for i in range(0, min(len(dataset), max_samples), batch_size):
-        yield dataset[i:i + batch_size]
+    for i in range(0, min(len(dataset), max_samples), chunk_size):
+        yield dataset[i:i + chunk_size]
 
 def batch_generator(dataset, batch_size, max_samples):
     """Generate batches of samples from a streaming dataset more efficiently."""
