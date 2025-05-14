@@ -70,6 +70,7 @@ def prepare_data(args, config, tokenizer, num_cpu, cache_path):
 
     # Flatten the list of chunks into a single list
     tokenized_texts = [item for sublist in tokenized_texts_chunks for item in sublist]
+    tokenized_texts = list(map(torch.tensor, tokenized_texts))  # Convert to tensors
     print(f"Loaded {len(tokenized_texts)} samples from cache.")
 
     # 3) Dataset and DataLoader setup
@@ -88,18 +89,15 @@ def prepare_data(args, config, tokenizer, num_cpu, cache_path):
 
     def collate_fn(batch):
         pad_id = tokenizer.pad_token_id
-        B = len(batch)
-        L = max(len(seq) for seq in batch)
+        max_len = max(len(seq) for seq in batch)
 
-        input_ids = torch.full((B, L), pad_id, dtype=torch.long)
-        attention_mask = torch.zeros((B, L), dtype=torch.long)
-        labels = torch.full((B, L), -100, dtype=torch.long)
-
-        for i, seq in enumerate(batch):
-            length = len(seq)
-            input_ids[i, :length] = torch.tensor(seq, dtype=torch.long)
-            attention_mask[i, :length] = 1
-            labels[i, :length] = torch.tensor(seq, dtype=torch.long)
+        input_ids = torch.nn.utils.rnn.pad_sequence(
+            [torch.tensor(seq, dtype=torch.long) for seq in batch],
+            batch_first=True,
+            padding_value=pad_id,
+        )
+        attention_mask = (input_ids != pad_id).long()
+        labels = input_ids.clone()
 
         return {
             "input_ids": input_ids,
@@ -107,25 +105,27 @@ def prepare_data(args, config, tokenizer, num_cpu, cache_path):
             "labels": labels,
         }
 
+    train_sampler = torch.utils.data.RandomSampler(dataset)
     train_loader = DataLoader(
         dataset,
         batch_size=batch_size,
-        shuffle=True,  # Enable shuffling for better training performance
-        num_workers=num_cpu,
+        sampler=train_sampler,  # Enable shuffling for better training performance
+        num_workers=4,
         pin_memory=True,
         collate_fn=collate_fn,
-        prefetch_factor=4,  # Increase prefetch factor to 4 for better throughput
+        prefetch_factor=2,  # Increase prefetch factor to 4 for better throughput
         persistent_workers=True,  # Keep workers alive between epochs to reduce startup overhead
     )
 
+    test_sampler = torch.utils.data.RandomSampler
     test_loader = DataLoader(
         test_dataset,
         batch_size=batch_size,
-        shuffle=True,
-        num_workers=num_cpu,
+        sampler=test_sampler,  # Enable shuffling for better training performance
+        num_workers=4,
         pin_memory=True,
         collate_fn=collate_fn,
-        prefetch_factor=4,  # Increase prefetch factor to 4 for better throughput
+        prefetch_factor=2,  # Increase prefetch factor to 4 for better throughput
         persistent_workers=True,  # Keep workers alive between epochs to reduce startup overhead
     )
 
@@ -210,18 +210,15 @@ def train_loop(checkpoint_path, config, model, train_loader, test_loader, device
 
                 def collate_fn(batch):
                     pad_id = tokenizer.pad_token_id
-                    B = len(batch)
-                    L = max(len(seq) for seq in batch)
+                    max_len = max(len(seq) for seq in batch)
 
-                    input_ids = torch.full((B, L), pad_id, dtype=torch.long)
-                    attention_mask = torch.zeros((B, L), dtype=torch.long)
-                    labels = torch.full((B, L), -100, dtype=torch.long)
-
-                    for i, seq in enumerate(batch):
-                        length = len(seq)
-                        input_ids[i, :length] = torch.tensor(seq, dtype=torch.long)
-                        attention_mask[i, :length] = 1
-                        labels[i, :length] = torch.tensor(seq, dtype=torch.long)
+                    input_ids = torch.nn.utils.rnn.pad_sequence(
+                        [torch.tensor(seq, dtype=torch.long) for seq in batch],
+                        batch_first=True,
+                        padding_value=pad_id,
+                    )
+                    attention_mask = (input_ids != pad_id).long()
+                    labels = input_ids.clone()
 
                     return {
                         "input_ids": input_ids,
