@@ -277,7 +277,7 @@ def main():
     tokenizer.model_max_length = config["n_positions"]
 
     # --- Prepare Data ---
-    train_loader, test_loader, test_texts = prepare_data(args, config, tokenizer, num_cpu, cache_path, tokenizer)
+    train_loader, test_loader, test_texts = prepare_data(args, config, tokenizer, num_cpu, cache_path)
 
     # --- Build Model ---
     model = build_model(config, device)
