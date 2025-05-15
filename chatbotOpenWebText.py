@@ -19,6 +19,8 @@ from utils import save_checkpoint, load_checkpoint, batch_generator, tokenize_sa
 from evaluation import evaluate_perplexity, create_test_subset
 from interactive_chat import start_chat_session
 
+os.environ["NCCL_SOCKET_IFNAME"] = "lo"  # Use the loopback interface
+
 def prepare_data(args, config, tokenizer, num_cpu, cache_path):
 
     block_size = config["block_size"]
