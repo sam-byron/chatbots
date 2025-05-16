@@ -143,6 +143,9 @@ def train_loop(accelerator, model, train_loader, test_loader, optimizer, schedul
     if start_epoch >= num_epochs:
         print("Training already completed. Exiting.")
         return
+    
+    # Track time for periodic checkpoint saving
+    last_checkpoint_time = time.time()
 
     for epoch in range(start_epoch, num_epochs):
         model.train()
@@ -162,6 +165,17 @@ def train_loop(accelerator, model, train_loader, test_loader, optimizer, schedul
             optimizer.step()
             scheduler.step()
             optimizer.zero_grad()
+
+        # Save checkpoint every 5 minutes
+        current_time = time.time()
+        if current_time - last_checkpoint_time >= 3 * 60:  # 15 minutes in seconds
+            save_checkpoint(epoch, model, optimizer, scheduler, scaler, checkpoint_path)
+            last_checkpoint_time = current_time
+            print(f"Epoch {epoch + 1}, Step {step + 1}/{len(train_loader)}, Loss: {loss.item():.4f}")
+            # Evaluate perplexity on a subset of the test set
+            # test_subset_loader = create_test_subset(test_texts, 10000, block_size, batch_size, num_cpu, collate_fn)
+            # test_subset_loss, perplexity = evaluate_perplexity(model, test_subset_loader, device)
+            # print(f"Epoch {epoch + 1} Subset test Loss: {test_subset_loss:.4f}, Perplexity: {perplexity:.4f}")
 
         avg_loss = total_loss / len(train_loader)
         print(f"Epoch {epoch + 1} average loss: {avg_loss:.4f}")
