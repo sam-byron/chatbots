@@ -12,7 +12,7 @@ def save_checkpoint(epoch, model, optimizer, scheduler, scaler, checkpoint_path=
         "scheduler_state_dict": scheduler.state_dict(),
         "scaler_state_dict": scaler.state_dict(),
     }, checkpoint_path)
-    print(f"Checkpoint saved at epoch {epoch + 1}")
+    print(f"Checkpoint saved at epoch {epoch + 1}", flush=True)
 
 def load_checkpoint(checkpoint_path="checkpoint.pt"):
     if os.path.exists(checkpoint_path):
@@ -23,7 +23,7 @@ def load_checkpoint(checkpoint_path="checkpoint.pt"):
         print("No checkpoint found. Starting from scratch.")
         return None
     
-def batch_generator_sequential(dataset, chunk_size, max_samples):
+def batch_generator_sequential(dataset, chunk_size, max_samples, batch_size):
     """Generate batches of samples from a non-streaming dataset more efficiently."""
     for i in range(0, min(len(dataset), max_samples), chunk_size):
         yield dataset[i:i + chunk_size]
@@ -74,7 +74,7 @@ def tokenize_sample(sample, tokenizer):
 
 def load_chunk(chunk_path):
     """Helper function to load a single chunk."""
-    print(f"Loading chunk from {chunk_path}...")
+    print(f"Loading chunk from {chunk_path}...", flush=True)
     return torch.load(chunk_path, map_location="cpu")
 
 def process_and_save_chunk(args):
@@ -83,10 +83,12 @@ def process_and_save_chunk(args):
     print(f"Processing chunk {chunk_index + 1}...")
 
     # Tokenize the chunk (sequentially within this process)
-    tokenized_chunk = list(map(tokenize_with_tokenizer, sample_chunk))
+    tokenized_chunk = list(map(tokenize_with_tokenizer, sample_chunk['text']))
+    # tokenized_chunk = list(map(tokenize_with_tokenizer, sample_chunk))
+
 
     # Save the tokenized chunk
     chunk_path = os.path.join(cache_path, f"chunk_{chunk_index + 1}.pt")
     torch.save(tokenized_chunk, chunk_path)
-    print(f"Saved chunk {chunk_index + 1} to {chunk_path}")
+    print(f"Saved chunk {chunk_index + 1} to {chunk_path}", flush=True)
     return chunk_path
